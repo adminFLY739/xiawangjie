@@ -119,55 +119,148 @@
         <h1>运行演示</h1>
         <div class="input-group">
             <label for="description">描述文本</label>
-            <input type="text" id="description" placeholder="请输入英文描述（如：A person walking）">
-        </div>
-        <div class="input-group">
-            <label for="number">生成长度</label>
-            <input type="number" id="number" placeholder="请输入数字（建议大于100）">
+            <input type="text" id="description" placeholder="请输入英文描述（如：face）">
         </div>
         <button id="generateBtn">开始生成</button>
-        <div class="video-container">
-            <video id="videoPlayer" controls></video>
+        <div class="video-container" style="height: 400px; position: relative;">
+            <model-viewer id="modelViewer" style="width: 100%; height: 100%;" camera-controls auto-rotate shadow-intensity="1" exposure="1"></model-viewer>
         </div>
     </div>
 
+    <!-- 使用国内CDN资源 -->
     <script type="module">
+        // 尝试加载model-viewer组件
+        const loadModelViewer = async () => {
+            try {
+                // 使用unpkg CDN加载
+                await import('https://unpkg.com/@google/model-viewer@3.3.0/dist/model-viewer.min.js')
+                    .catch(async () => {
+                        // 如果unpkg失败，尝试从jsDelivr加载
+                        console.log("unpkg加载失败，尝试从jsDelivr加载...");
+                        await import('https://cdn.jsdelivr.net/npm/@google/model-viewer@3.3.0/dist/model-viewer.min.js');
+                    });
+                console.log("model-viewer组件加载成功");
+            } catch (error) {
+                console.error("无法加载model-viewer组件:", error);
+                alert("无法加载3D查看器组件，请检查您的网络连接或稍后再试。");
+                
+                // 尝试提供简单的图片预览作为备选
+                const modelViewer = document.getElementById('modelViewer');
+                modelViewer.innerHTML = '';
+            }
+        };
+        
+        loadModelViewer();
+    </script>
+    <script type="module">
+        // 使用jsDelivr替代原有的CDN
         import { Client } from 'https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js';
         
         window.onload = function () {
             const generateBtn = document.getElementById('generateBtn');
+            let modelViewer = document.getElementById('modelViewer');
             
             generateBtn.addEventListener('click', async function() {
-                const description = document.getElementById('description').value;
-                const number = document.getElementById('number').value;
-                
-                if (!description || !number) {
+                const description = document.getElementById('description').value;                
+                if (!description) {
                     alert('请填写完整信息');
                     return;
                 }
 
                 generateBtn.disabled = true;
-                generateBtn.textContent = '生成中...需等待1~2分钟';
+                generateBtn.textContent = '开始生成';
+                
+                // 重置model-viewer状态
+                modelViewer.removeAttribute('src');
+                modelViewer.innerHTML = '';
+                
+                // 移除之前可能添加的事件监听器
+                const newModelViewer = modelViewer.cloneNode(true);
+                modelViewer.parentNode.replaceChild(newModelViewer, modelViewer);
+                
+                // 更新modelViewer引用
+                modelViewer = document.getElementById('modelViewer');
 
                 try {
-                    const app = await Client.connect("https://mingyuan-remodiffuse.hf.space/");
-                    const result = await app.predict("/predict", [
-                        description,
-                        parseInt(number)
-                    ]);
+                    // 设置请求超时为3分钟
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('请求超时，请重试')), 180000)
+                    );
+                    
+                    // 实际API请求
+                    const fetchPromise = async () => {
+                        try {
+                            const app = await Client.connect("https://jbilcke-hf-text-to-3d.hf.space");
+                            return await app.predict("/generate", [description]);
+                        } catch (err) {
+                            console.error("连接原始服务失败，尝试备用服务:", err);
+                            // 如果连接原始服务失败，可以尝试连接备用服务
+                            // 这里仅作示例，实际需要替换为可用的备用服务
+                            const app = await Client.connect("https://text-to-3d-jbilcke-hf.hf.space");
+                            return await app.predict("/generate", [description]);
+                        }
+                    };
+                    
+                    // 使用Promise.race来实现超时处理
+                    const result = await Promise.race([fetchPromise(), timeoutPromise]);
+                    
+                    console.log(result);
 
                     if (result && result.data && result.data[0]) {
-                        const videoUrl = `https://mingyuan-remodiffuse.hf.space/file=${result.data[0][0].name}`;
-                        const videoPlayer = document.getElementById('videoPlayer');
-                        videoPlayer.src = videoUrl;
-                        videoPlayer.load();
-                        videoPlayer.play();
+                        let modelUrl = '';
+                        
+                        // 处理不同格式的结果数据
+                        if (typeof result.data[0] === 'string') {
+                            modelUrl = `https://jbilcke-hf-text-to-3d.hf.space/file=${result.data[0]}`;
+                        } else if (result.data[0].url) {
+                            modelUrl = result.data[0].url;
+                        } else if (result.data[0][0] && result.data[0][0].name) {
+                            modelUrl = `https://jbilcke-hf-text-to-3d.hf.space/file=${result.data[0][0].name}`;
+                        }
+                        
+                        console.log("模型URL:", modelUrl);
+                        
+                        // 添加模型加载错误处理
+                        const handleModelError = () => {
+                            console.error("模型加载失败");
+                            modelViewer.innerHTML = '';
+                        };
+                        
+                        try {
+                            // 确保清除之前的属性和监听器
+                            modelViewer.removeAttribute('src');
+                            modelViewer.removeAttribute('alt');
+                            modelViewer.removeAttribute('camera-controls');
+                            modelViewer.removeAttribute('auto-rotate');
+                            
+                            // 设置model-viewer的src属性以加载模型
+                            // 注意：添加时间戳以防止缓存问题
+                            const timestamp = new Date().getTime();
+                            const modelUrlWithTimestamp = `${modelUrl}?t=${timestamp}`;
+                            
+                            setTimeout(() => {
+                                modelViewer.addEventListener('error', handleModelError, {once: true});
+                                modelViewer.setAttribute('src', modelUrlWithTimestamp);
+                                modelViewer.setAttribute('alt', `基于"${description}"生成的3D模型`);
+                                // 添加一些额外控制选项
+                                modelViewer.setAttribute('camera-controls', '');
+                                modelViewer.setAttribute('auto-rotate', '');
+                            }, 100);
+                        } catch (modelError) {
+                            console.error("设置模型失败:", modelError);
+                            handleModelError();
+                        }
+                        
                     } else {
-                        alert('生成视频失败，请重试');
+                        alert('生成3D模型失败，请重试');
                     }
                 } catch (error) {
-                    console.error("Error generating video:", error);
-                    alert('生成过程出错，请重试');
+                    console.error("Error generating model:", error);
+                    if (error.message.includes('timeout') || error.message.includes('超时')) {
+                        alert('请求超时，请重试');
+                    } else {
+                        alert('生成过程出错，请重试: ' + error.message);
+                    }
                 } finally {
                     generateBtn.disabled = false;
                     generateBtn.textContent = '开始生成';
